@@ -39,6 +39,8 @@ prop_delete() ->
                 [] =:= merklet:diff(PartialTree, DeletedTree)
                 andalso
                 merklet:keys(DeletedTree) =:= merklet:keys(PartialTree)
+                andalso
+                DeletedTree =:= PartialTree
             end).
 
 %%%%%%%%%%%%%%%%

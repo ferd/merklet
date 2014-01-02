@@ -99,8 +99,8 @@ delete_leaf(Leaf=#leaf{hashkey=K}, Inner=#inner{offset=Offset, children=Children
                 Node -> % replacement node
                     orddict:store(Byte, Node, Children)
             end,
-            Inner#inner{hashchildren=children_hash(NewChildren),
-                        children=NewChildren}
+            maybe_shrink(Inner#inner{hashchildren=children_hash(NewChildren),
+                                     children=NewChildren})
     end.
 
 raw_keys(undefined) ->
