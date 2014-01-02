@@ -1,0 +1,6 @@
+{application, merklet,
+ [{description, "Merkle Trees for data replication purposes"},
+  {vsn, "1.0.0"},
+  {modules, [merklet]},
+  {registered, []},
+  {applications, [kernel, stdlib, crypto]}]}.
