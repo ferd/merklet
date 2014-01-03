@@ -2,7 +2,8 @@
 
 -record(leaf, {userkey :: binary(), % user submitted key
                hashkey :: binary(), % hash of the user submitted key
-               hashval :: binary()}). % value, hashed.
+               hashval :: binary(), % value, hashed.
+               hash :: binary()}).  % hash(hash(key), hash(value))
 -record(inner, {hashchildren :: binary(), % hash of children's hashes
                 children :: [{offset(), #inner{} | #leaf{}}, ...],
                 offset :: non_neg_integer()}). % byte offset
@@ -119,9 +120,9 @@ raw_diff(undefined, undefined) -> [];
 raw_diff(undefined, Tree2) -> raw_keys(Tree2);
 raw_diff(Tree1, undefined) -> raw_keys(Tree1);
 %% If hashes are the same, we're done.
-raw_diff(#leaf{hashkey=Hash}, #leaf{hashkey=Hash}) -> [];
-raw_diff(#leaf{hashkey=Hash}, #inner{hashchildren=Hash}) -> [];
-raw_diff(#inner{hashchildren=Hash}, #leaf{hashkey=Hash}) -> [];
+raw_diff(#leaf{hash=Hash}, #leaf{hash=Hash}) -> [];
+raw_diff(#leaf{hash=Hash}, #inner{hashchildren=Hash}) -> [];
+raw_diff(#inner{hashchildren=Hash}, #leaf{hash=Hash}) -> [];
 raw_diff(#inner{hashchildren=Hash}, #inner{hashchildren=Hash}) -> [];
 %% if they differ and both nodes are leaf nodes, return both values
 raw_diff(#leaf{userkey=Key1}, #leaf{userkey=Key2}) -> [Key1,Key2];
@@ -161,9 +162,12 @@ to_leaf(Key, Value) when is_binary(Key) ->
     %% The `hashval' entry would need to possibly use something
     %% else than BERT's format to be more portable to other languages,
     %% but at least it should be unambiguous.
+    HashKey = crypto:hash(?HASH, Key),
+    HashVal = crypto:hash(?HASH, Value),
     #leaf{userkey=Key,
-          hashkey=crypto:hash(?HASH, Key),
-          hashval=crypto:hash(?HASH, Value)}.
+          hashkey=HashKey,
+          hashval=HashVal,
+          hash=crypto:hash(?HASH, <<HashKey/binary, HashVal/binary>>)}.
 
 %% @doc We build a Key-Value list of the child nodes and their offset
 %% to be used as a sparse K-ary tree.
@@ -184,7 +188,7 @@ children_hash(Children) ->
     Hashes = lists:sort(
         [case Child of
              #inner{hashchildren=HashChildren} -> HashChildren;
-             #leaf{hashkey=Key} -> Key
+             #leaf{hash=Hash} -> Hash
          end || {_Offset, Child} <- Children]
     ),
     crypto:hash_final(lists:foldl(fun(K, H) -> crypto:hash_update(H, K) end,

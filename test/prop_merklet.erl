@@ -8,7 +8,8 @@
 
 eunit_test_() ->
     [?run(prop_diff()),
-     ?run(prop_delete())].
+     ?run(prop_delete()),
+     ?run(prop_modify())].
 
 %%%%%%%%%%%%%%%%%%
 %%% Properties %%%
@@ -43,6 +44,19 @@ prop_delete() ->
                 DeletedTree =:= PartialTree
             end).
 
+prop_modify() ->
+    %% Updating records' values should show detections as part of merklet's
+    %% diff operations, even if none of the keys change.
+    ?FORALL({All, ToChange}, modify_keyvals(0.90),
+            begin
+                Tree = insert_all(All),
+                KVSet = [{K, term_to_binary(make_ref())} || K <- ToChange],
+                Modified = insert_all(KVSet, Tree),
+                merklet:keys(Tree) =:= merklet:keys(Modified)
+                andalso
+                lists:sort(ToChange) =:= merklet:diff(Tree, Modified)
+            end).
+
 %%%%%%%%%%%%%%%%
 %%% Builders %%%
 %%%%%%%%%%%%%%%%
@@ -67,7 +81,16 @@ delete_keyvals(Rate) ->
     ?LET(KeyVals, keyvals(),
          begin
           Rand = random:uniform(),
-          ToDelete = [Key || {Key,_} <- KeyVals, Rate < Rand],
-          WithoutDeleted = [{K,V} || {K,V} <- KeyVals, Rate > Rand],
+          ToDelete = [Key || {Key,_} <- KeyVals, Rate > Rand],
+          WithoutDeleted = [{K,V} || {K,V} <- KeyVals, Rate < Rand],
           {KeyVals, WithoutDeleted, ToDelete}
+         end).
+
+modify_keyvals(Rate) ->
+    % similar as delete_keyvals but doesn't allow duplicate updates
+    ?LET(KeyVals, keyvals(),
+         begin
+          Rand = random:uniform(),
+          ToDelete = [Key || {Key,_} <- KeyVals, Rate > Rand],
+          {KeyVals, lists:usort(ToDelete)}
          end).
