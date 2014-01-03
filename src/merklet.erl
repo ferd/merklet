@@ -2,7 +2,6 @@
 
 -record(leaf, {userkey :: binary(), % user submitted key
                hashkey :: binary(), % hash of the user submitted key
-               hashval :: binary(), % value, hashed.
                hash :: binary()}).  % hash(hash(key), hash(value))
 -record(inner, {hashchildren :: binary(), % hash of children's hashes
                 children :: [{offset(), #inner{} | #leaf{}}, ...],
@@ -159,14 +158,14 @@ diff_offsets(L1=[{Off1, Child1}|Rest1], L2=[{Off2, Child2}|Rest2]) ->
 %% @doc Takes a Key and a Value and turns them to a leaf node.
 -spec to_leaf(key(), value()) -> leaf().
 to_leaf(Key, Value) when is_binary(Key) ->
-    %% The `hashval' entry would need to possibly use something
-    %% else than BERT's format to be more portable to other languages,
-    %% but at least it should be unambiguous.
+    %% We use the hash of the value as part of the 'hash' entry,
+    %% but not the 'hashkey'. This allows a tree where the structure
+    %% is based on the keys, but we can still compare and use both
+    %% the key and its value to do comparison when diffing.
     HashKey = crypto:hash(?HASH, Key),
     HashVal = crypto:hash(?HASH, Value),
     #leaf{userkey=Key,
           hashkey=HashKey,
-          hashval=HashVal,
           hash=crypto:hash(?HASH, <<HashKey/binary, HashVal/binary>>)}.
 
 %% @doc We build a Key-Value list of the child nodes and their offset
@@ -182,6 +181,11 @@ to_inner(Offset, Child=#leaf{hashkey=Hash}) ->
 %% fetch the hashes for all the children, sort them by the value
 %% they would yield for each byte being converted as an integer, and
 %% then apply the ?HASH to the entire sequence in that order.
+%%
+%% We use the 'hash' value for leaf nodes so that comparison can be done
+%% while caring about both keys and values. This has no impact on position
+%% of inner nodes, because it is dictated by the children's keyhashes, and
+%% not the inner node's own hashes.
 %% @todo consider endianness for absolute portability
 -spec children_hash([{offset(), leaf()}, ...]) -> binary().
 children_hash(Children) ->
