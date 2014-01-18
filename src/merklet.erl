@@ -106,13 +106,13 @@ diff(Tree1, Tree2) ->
 %%
 %% - `<<>>' means returning the current node, at whatever point we are in the
 %%   tree's traversal.
-%% - Whenever we hit a leaf node during traversal, it is returned.
 %% - `<<Offset,...>>' means to return the node at the given offset for the
 %%   current tree level. For example, a value of `<<0>>' means to return the
 %%   leftmost child of the current node, whereas `<<3>>' should return the
 %%   4th leftmost child. Any time the path is larger than the number of
 %%   children, we return `undefined'.
 %%   This is the case where we can recurse.
+%% - Any invalid path returns `undefined'.
 %%
 %% The three terms required are:
 %% - `at': Uses the path as above to traverse the tree and return a node.
@@ -416,9 +416,9 @@ child_at(<<N,Rest/binary>>, #inner{children=Children}) ->
         throw:{Off,Node} -> {Off,Node};
         throw:Node -> child_at(Rest, Node)
     end;
-%% Always stop at a leaf.
-child_at(_, Node=#leaf{}) ->
-    Node.
+%% Invalid path
+child_at(_, _) ->
+    undefined.
 
 %% Serialize nodes flatly. All terms are self-contained and their
 %% trailing value can be used as one blob. A protocol using this format
