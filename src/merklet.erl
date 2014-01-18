@@ -1,3 +1,38 @@
+%%% @doc Merkle Trees are a data structures devised especially to find
+%%% conflicts or diverging pieces of data between two data sets.
+%%%
+%%% They're more or less a hybrid between a sparse K-ary tree and a
+%%% trie of hash values.
+%%%
+%%% Each `{Key, Value}' pair gets two hashes: a hash of the key (Hkey), and
+%%% a hash of the hashed key and the hashed value (Hash).
+%%%
+%%% The Hkey is used as the main index and to build a tree. If we have three
+%%% hashes with the values `<<213,21,54,...>>', `<<213,33,98,...>>', and
+%%% `<<11,45,101,...>>', the resulting tree/trie is:
+%%%
+%%%                (Root)
+%%%                 Inner
+%%%                /    \
+%%%               /      \
+%%%            (11)      (213)
+%%%  <<11,45,101,...>>   Inner 
+%%%                     /     \
+%%%                    /       \
+%%%                 (21)       (33)
+%%%      <<213,21,54,...>>     <<213,33,98,...>>
+%%%
+%%% Each of the leaf nodes will contain both hashes, along with a non-hashed
+%%% version of the key. Each Inner node contains a hash of all its children's
+%%% hash values, and indexes them by the hash byte at the given depth.
+%%%
+%%% This structure allows to quickly compare for changes in values, missing
+%%% nodes, and so on, but more importantly allows to quickly know if the data
+%%% sets (or subsets of them) are identical.
+%%%
+%%% It also allows to do a level-order traversal node-per-node over the network
+%%% allowing somewhat efficient diffing.
+%%% @end
 -module(merklet).
 
 -record(leaf, {userkey :: binary(), % user submitted key
@@ -63,7 +98,7 @@ diff(Tree1, Tree2) ->
 
 %% @doc Takes a local tree, and an access function to another tree,
 %% and returns the keys associated with diverging parts of both trees.
-%% The access fun takes an atom and a path and must retourn a flat tree
+%% The access fun takes an atom and a path and must return a flat tree
 %% node or a subtree. (`fun(Verb, Path) -> Node | undefined').
 %%
 %% The Path is a sequence of bytes (in a `binary()') telling how to get to
@@ -91,6 +126,29 @@ diff(Tree1, Tree2) ->
 %%     with its byte at the offset in the dictionary structure
 %%     (`{ByteAtOffset, Node}').
 %%
+%%  Examples of navigation through a tree of the form:
+%%
+%%   0 |             ___.-A-._____
+%%     |           /      |       \
+%%   1 |        .-B-.     C      .-D-.
+%%     |       /     \          /     \
+%%   2 |      E       F       .G.      H
+%%     |                     /   \
+%%   3 |                    I     J
+%%
+%%  Which is four levels deep. The following paths lead to following nodes:
+%%
+%%  +==============+===========+    +==============+===========+
+%%  |    Path      |    Node   |    |    Path      |    Node   |
+%%  +==============+===========+    +==============+===========+
+%%  | <<>>         |     A     |    | <<0,1>>      |     F     |
+%%  | <<0>>        |     B     |    | <<2,0>>      |     G     |
+%%  | <<1>>        |     C     |    | <<2,1>>      |     H     |
+%%  | <<2>>        |     D     |    | <<2,0,0>>    |     I     |
+%%  | <<3>>        | undefined |    | <<2,0,1>>    |     J     |
+%%  | <<0,0>>      |     E     |    | <<2,0,1,3>>  | undefined |
+%%  +--------------+-----------+    +--------------+-----------+
+%%                      
 %% The values returned are all the keys that differ across both trees.
 -spec dist_diff(tree(), access_fun()) -> [key()].
 dist_diff(Tree, Fun) when is_function(Fun,2) ->
