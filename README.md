@@ -15,17 +15,18 @@ manner (according to me). Other difference include:
   children of an inner node, rather than a flat minimal 255 rounds for each.
 - The diff algorithm explicitly points out differences in keys *and* values,
   not just keys.
+- It is possible to do incremental tree diffing over the network, and uses
+  an internal binary serialization format that could eventually be opened
+  and usable by more languages.
 
 Further documentation (and changes) to come.
 
 Todo list:
 
-- I'd like to add a serialization function that would be more or less
-  language-agnostic.
-- I'd like to add a functionality that is more protocol-like and would
-  make it possible to do incremental tree diffing over the network, as
-  opposed to the current one, which requires both trees to fully be on the
-  node.
+- I'd like to finalize the serialization format and make it public rather
+  than private to the module to be more language-agnostic
+- Specify an actual protocol for types of distributed calls, although that
+  may be left to a higher-level library.
 
 ## Compiling ##
 
@@ -105,7 +106,7 @@ Todo list:
 
 ## Notes ##
 
-The implementation is still incomplete and should not be used while this notice
-is here.
+The implementation is still unstable and should be used with care while this
+notice is here.
 
 More docs to come.

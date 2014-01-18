@@ -8,6 +8,7 @@
 
 eunit_test_() ->
     [?run(prop_diff()),
+     ?run(prop_dist_diff()),
      ?run(prop_delete()),
      ?run(prop_modify())].
 
@@ -24,6 +25,31 @@ prop_diff() ->
                 T2 = insert_all(KV2, T1),
                 Diff1 = merklet:diff(T1,T2),
                 Diff2 = merklet:diff(T2,T1),
+                Diff1 =:= Diff2
+                andalso
+                Diff1 =:= lists:sort(Keys)
+            end).
+
+prop_dist_diff() ->
+    %% All differences between trees can be found no matter the order,
+    %% and returns the list of different keys. Same as previous case, but
+    %% uses the internal serialization format and distribution API
+    %% functions of merklet to do its thing.
+    ?FORALL({KV1,KV2}, diff_keyvals(),
+            begin
+                Keys = [K || {K,_} <- KV2],
+                T1 = insert_all(KV1),
+                T2 = insert_all(KV2, T1),
+                %% remmote version of the trees, should be handled
+                %% by merklet:unserialize/1. In practice, this kind
+                %% of thing would take place over the network, and
+                %% merklet:access_serialize/2, and R1 and R2 would be
+                %% be wrapped in other functions to help.
+                R1 = merklet:access_serialize(T1),
+                R2 = merklet:access_serialize(T2),
+                %% Remote diffing
+                Diff1 = merklet:dist_diff(T1,merklet:access_unserialize(R2)),
+                Diff2 = merklet:dist_diff(T2,merklet:access_unserialize(R1)),
                 Diff1 =:= Diff2
                 andalso
                 Diff1 =:= lists:sort(Keys)
