@@ -12,6 +12,12 @@ eunit_test_() ->
      ?run(prop_delete()),
      ?run(prop_modify())].
 
+regression_diff_test() ->
+    T1 = insert_all([{<<1>>,<<1>>},{<<2>>,<<2>>},{<<3>>,<<3>>}]),
+    T2 = insert_all([{<<1>>,<<0>>}]),
+    ?assertEqual([<<1>>,<<2>>,<<3>>], merklet:diff(T1,T2)),
+    ?assertEqual([<<1>>,<<2>>,<<3>>], merklet:diff(T2,T1)).
+
 %%%%%%%%%%%%%%%%%%
 %%% Properties %%%
 %%%%%%%%%%%%%%%%%%
@@ -73,7 +79,7 @@ prop_delete() ->
 prop_modify() ->
     %% Updating records' values should show detections as part of merklet's
     %% diff operations, even if none of the keys change.
-    ?FORALL({All, ToChange}, modify_keyvals(0.90),
+    ?FORALL({All, ToChange}, modify_keyvals(0.50),
             begin
                 Tree = insert_all(All),
                 KVSet = [{K, term_to_binary(make_ref())} || K <- ToChange],
@@ -81,6 +87,8 @@ prop_modify() ->
                 merklet:keys(Tree) =:= merklet:keys(Modified)
                 andalso
                 lists:sort(ToChange) =:= merklet:diff(Tree, Modified)
+                andalso
+                lists:sort(ToChange) =:= merklet:diff(Modified, Tree)
             end).
 
 %%%%%%%%%%%%%%%%
@@ -114,9 +122,11 @@ delete_keyvals(Rate) ->
 
 modify_keyvals(Rate) ->
     % similar as delete_keyvals but doesn't allow duplicate updates
-    ?LET(KeyVals, keyvals(),
-         begin
-          Rand = random:uniform(),
-          ToDelete = [Key || {Key,_} <- KeyVals, Rate > Rand],
-          {KeyVals, lists:usort(ToDelete)}
-         end).
+    ?SUCHTHAT({_,ToChange}, 
+              ?LET(KeyVals, keyvals(),
+                begin
+                  Rand = random:uniform(),
+                  ToDelete = [Key || {Key,_} <- KeyVals, Rate > Rand],
+                  {KeyVals, lists:usort(ToDelete)}
+                end),
+              ToChange =/= []).

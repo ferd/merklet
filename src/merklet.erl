@@ -50,8 +50,8 @@
 -type key() :: binary().
 -type value() :: binary().
 -type path() :: binary().
--type access_fun() :: fun((at | child_at | keys, path()) -> tree()).
--type serial_fun() :: fun((at | child_at | keys, path()) -> binary()).
+-type access_fun() :: fun((at | child_at | keys | {keys, Hash::binary()}, path()) -> tree()).
+-type serial_fun() :: fun((at | child_at | keys | {keys, Hash::binary()}, path()) -> binary()).
 
 -export_type([tree/0, key/0, value/0, path/0, access_fun/0, serial_fun/0]).
 -export([insert/2, delete/2, keys/1, diff/2]).
@@ -117,7 +117,8 @@ diff(Tree1, Tree2) ->
 %% The three terms required are:
 %% - `at': Uses the path as above to traverse the tree and return a node.
 %% - `keys': Returns all the keys held (recursively) by the node at a given
-%%   path.
+%%   path. A special variant exists of the form `{keys, Hash}', where the
+%%   hash `Hash' must be ignored.
 %% - `child_at': Special case of `at' used when comparing child nodes of two
 %%   inner nodes. Basically the same as `at', but with one new rule:
 %%
@@ -161,7 +162,8 @@ dist_diff(Tree, Fun) when is_function(Fun,2) ->
 access_serialize(Tree) ->
     fun(at, Path) -> serialize(at(Path, Tree));
        (child_at, Path) -> serialize(child_at(Path, Tree));
-       (keys, Path) -> serialize(raw_keys(at(Path, Tree)))
+       (keys, Path) -> serialize(raw_keys(at(Path, Tree)));
+       ({keys,Skip}, Path) -> serialize(raw_keys(at(Path, Tree), Skip))
     end.
 
 %% @doc Takes an {@link access_fun()} that fetches nodes serialized according
@@ -239,6 +241,19 @@ raw_keys(#inner{children=Children}) ->
         Children
     )).
 
+%% Same as raw_keys/1, but ignores a given hash
+raw_keys(undefined, _) ->
+    [];
+raw_keys(#leaf{hash=Hash}, Hash) -> [];
+raw_keys(#leaf{userkey=Key}, _) ->
+    [Key];
+raw_keys(#inner{children=Children}, ToSkip) ->
+    lists:append(orddict:fold(
+        fun(_Byte, Node, Acc) -> [raw_keys(Node, ToSkip)|Acc] end,
+        [],
+        Children
+    )).
+
 
 -spec diff(tree(), access_fun(), path()) -> [key()].
 diff(Tree, Fun, Path) ->
@@ -264,10 +279,12 @@ raw_diff(#inner{hashchildren=Hash}, #inner{hashchildren=Hash}, _, _) ->
 raw_diff(#leaf{userkey=Key1}, #leaf{userkey=Key2}, _, _) ->
     [Key1,Key2];
 %% if both differ but one is an inner node, return everything
-raw_diff(#leaf{userkey=Key}, #inner{}, Fun, Path) ->
-    Fun(keys, Path) -- [Key];
-raw_diff(Inner=#inner{}, #leaf{userkey=Key}, _, _) ->
-    raw_keys(Inner) -- [Key];
+raw_diff(#leaf{hash=ToSkip}, #inner{}, Fun, Path) ->
+    %% We can only get rid of the current Key if the hashes differ
+    Fun({keys, ToSkip}, Path);
+raw_diff(Inner=#inner{}, #leaf{hash=ToSkip}, _, _) ->
+    %% We can only get rid of the current Key if the hashes differ
+    raw_keys(Inner, ToSkip);
 %% if both nodes are inner and populated, compare them offset by offset.
 raw_diff(#inner{children=Children}, #inner{}, Fun, Path) ->
     ChildPath = <<Path/binary, 0>>,
@@ -380,7 +397,8 @@ children_offsets(Children) -> Children.
 access_local(Node) ->
     fun(at, Path) -> at(Path, Node);
        (child_at, Path) -> child_at(Path, Node);
-       (keys, Path) -> raw_keys(at(Path, Node))
+       (keys, Path) -> raw_keys(at(Path, Node));
+       ({keys,Skip}, Path) -> raw_keys(at(Path, Node), Skip)
     end.
 
 %% Return the node at a given position in a tree.
