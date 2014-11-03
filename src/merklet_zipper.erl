@@ -51,6 +51,7 @@
                hash :: binary()}).  % hash(hash(key), hash(value))
 -record(inner, {hashchildren :: binary(), % hash of children's hashes
                 children :: children(),
+                byte :: byte(),
                 offset :: non_neg_integer()}). % byte the inner node is stored under
 -record(zipper, {thread :: [znode()],
                  index :: binary(),
@@ -72,14 +73,24 @@
 %%% TREE-BUILDING API %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%
 
-insert(Key, Value, Tree) ->
-    insert(to_leaf(Key, Value), rewind(Tree)).
+%insert(Key, Value, Tree) ->
+    %insert(to_leaf(Key, Value), rewind(Tree)).
+insert(Key, Value, Zipper) ->
+    Tree = case rewind(Zipper) of
+        undefined -> undefined;
+        NewZipper -> NewZipper#zipper.current
+    end,
+    root(insert_leaf(0, to_leaf(Key, Value), Tree)).
 
 insert_many([], Tree) -> Tree;
 insert_many([{K,V}|T], Tree) -> insert_many(T, insert(K,V,Tree)).
 
-delete(Key, Tree) ->
-    delete_leaf(to_leaf(Key, <<>>), rewind(Tree)).
+delete(Key, Zipper) ->
+    Tree = case rewind(Zipper) of
+        undefined -> undefined;
+        NewZipper -> NewZipper#zipper.current
+    end,
+    root(delete_leaf(to_leaf(Key, <<>>), Tree)).
 
 keys(undefined) ->
     [];
@@ -117,12 +128,12 @@ access(keys, Path, Zipper) ->
         #zipper{current=Current} -> Current
     end,
     raw_keys(Node);
-access({keys, Skip}, Path, Zipper) ->
+access({keys, Key, Skip}, Path, Zipper) ->
     Node = case at(Path, Zipper) of
         undefined -> undefined;
         #zipper{current=Current} -> Current
     end,
-    raw_keys(Node, Skip).
+    raw_keys(Node, Key, Skip).
 
 %access_serialize(at, Path, Zipper) ->
 %    NewZipper = at(Path, Zipper),
@@ -139,7 +150,7 @@ at(Path, Z=#zipper{index=Index}) ->
     IndexSize = byte_size(Index),
     ToUnwind = max(0, IndexSize-PrefixSize),
     <<Done:PrefixSize/binary, Todo/binary>> = Path,
-    at_level(Done, Todo, at_unwind(ToUnwind, Z)).
+    at_level(Done, Todo, clean_if_root(at_unwind(ToUnwind, Z))).
 
 at_unwind(0, Z) -> Z;
 at_unwind(N, Z) -> at_unwind(N-1, parent(Z)).
@@ -168,8 +179,8 @@ prev(#zipper{thread=[#inner{children= {[],_}}|_]}) -> undefined;
 prev(Z=#zipper{thread=[I=#inner{children = Siblings}|Thread],
                index = Index, current = Current}) ->
     {[{_, NewCurrent}|Prev], Next} = Siblings,
-    Offset = hash_offset(byte_size(Index)-1, Current),
-    NewSiblings = {Prev, [{Offset, Current} | Next]},
+    Byte = hash_offset(byte_size(Index)-1, Current),
+    NewSiblings = {Prev, [{Byte, Current} | Next]},
     Z#zipper{thread = [I#inner{children=NewSiblings}|Thread],
              index = index_add(Index, -1), current = NewCurrent}.
 
@@ -178,13 +189,18 @@ next(#zipper{thread=[#inner{children = {_,[]}}|_]}) -> undefined;
 next(Z=#zipper{thread=[I=#inner{children = Siblings}|Thread],
                index = Index, current = Current}) ->
     {Prev, [{_, NewCurrent}|Next]} = Siblings,
-    Offset = hash_offset(byte_size(Index)-1, Current),
-    NewSiblings = {[{Offset, Current}|Prev], Next},
+    Byte = hash_offset(byte_size(Index)-1, Current),
+    NewSiblings = {[{Byte, Current}|Prev], Next},
     Z#zipper{thread = [I#inner{children=NewSiblings}|Thread],
              index = index_add(Index, +1), current = NewCurrent}.
 
 child(#zipper{current = #leaf{}}) -> undefined;
-child(#zipper{current=#inner{children={_,[]}}}) -> undefined;
+child(#zipper{current=#inner{children={[],[]}}}) -> undefined;
+child(Z=#zipper{thread = Thread, index = Index,
+                current = I=#inner{children={[{_, NewCurrent} | Prev],[]}}}) ->
+    NewIndex = <<Index/binary, (length(Prev))>>,
+    Z#zipper{thread = [I#inner{children={Prev,[]}}|Thread],
+             index = NewIndex, current = NewCurrent};
 child(Z=#zipper{thread = Thread, index = Index,
                 current = I=#inner{children=Children}}) ->
     {Prev, [{_, NewCurrent}|Next]} = Children,
@@ -210,86 +226,77 @@ parent(Z=#zipper{thread = [I=#inner{children = {Prev,Next}} | Thread],
     Z#zipper{thread = Thread, index=NewIndex, state=NewState,
              current = I#inner{children = Children, hashchildren=HashChildren}}.
 
+%% In some deletion cases, we're left with a dirty top-node. This function
+%% allows to change this.
+clean_if_root(Z=#zipper{thread = [], state = dirty, current = I=#inner{children=Children}}) ->
+    Z#zipper{state = clean, current=I#inner{hashchildren=children_hash(Children)}};
+clean_if_root(Z=#zipper{thread = [], state = dirty, current = #leaf{}}) ->
+    Z#zipper{state=clean};
+clean_if_root(Z) ->
+    Z.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% PRIVATE TREE BUILDING %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% if the tree is empty, just use the leaf as a new tree.
-insert(Leaf, undefined) ->
-    root(Leaf);
-%% If the node inserted already exists, do nothing. This case is important
-%% because it may leave the tree in a clean state.
-insert(Leaf, Z=#zipper{current=Leaf}) ->
-    Z;
+
+%% if the tree is empty, just use the leaf
+insert_leaf(_Offset, Leaf, undefined) ->
+    Leaf;
 %% If the offset is at the max value for the hash, return the leaf --
 %% We can't go deeper anyway.
-insert(Leaf, Z=#zipper{index=Bin}) when byte_size(Bin) =:= ?HASHBYTES ->
-    Z#zipper{current=Leaf, state=dirty};
+insert_leaf(?HASHBYTES, Leaf, _) ->
+    Leaf;
 %% if the current node of the tree is a leaf and both keys are the same,
 %% replace it.
-insert(Leaf=#leaf{hashkey=Key}, Z=#zipper{current=#leaf{hashkey=Key}}) ->
-    Z#zipper{current=Leaf};
-%% If the current node of the tree is a leaf, and the keys are different,
-%% turn the current leaf into an inner node, and insert the new one in it
-insert(NewLeaf=#leaf{}, Z=#zipper{current=OldLeaf=#leaf{}, index=Index}) ->
-    Offset = byte_size(Index),
-    insert(NewLeaf, Z#zipper{current=to_inner(Offset,OldLeaf), state=dirty});
+insert_leaf(_Offset, Leaf=#leaf{hashkey=Key}, #leaf{hashkey=Key}) ->
+    Leaf;
+%% if the current node of the tree is a leaf, and keys are different, turn the
+%% current leaf into an inner node, and insert the new one in it.
+insert_leaf(Offset, NewLeaf, OldLeaf=#leaf{}) ->
+    insert_leaf(Offset, NewLeaf, to_inner(Offset, OldLeaf));
 %% Insert to an inner node!
-insert(Leaf=#leaf{hashkey=Key},
-       Z=#zipper{thread=Thread, index=Index, current=I=#inner{children=Children}}) ->
-    ChildOffset = byte_size(Index),
-    Byte = binary:at(Key, ChildOffset),
-    case find_child(Byte, Children) of
+insert_leaf(Offset, Leaf=#leaf{hashkey=Key}, Inner=#inner{children=Children}) ->
+    Byte = binary:at(Key, Offset),
+    NewChildren = case find_child(Byte, Children) of
         {not_found, {Prev,Next}} ->
-            Z#zipper{thread = [I#inner{children={Prev,Next}}|Thread],
-                     state = dirty,
-                     index = <<Index/binary, (length(Prev))>>,
-                     current = Leaf};
+            {Prev, [{Byte,Leaf}|Next]};
         {ok, {Prev, Next}, Child} ->
-            insert(Leaf,
-                   Z#zipper{thread = [I#inner{children={Prev,Next}}|Thread],
-                            %state = dirty,
-                            index = <<Index/binary, (length(Prev))>>,
-                            current = Child})
-    end.
+            {Prev, [{Byte, insert_leaf(Offset+1, Leaf, Child)}|Next]}
+    end,
+    Inner#inner{hashchildren=children_hash(NewChildren), children=NewChildren}.
+
 
 %% Not found or empty tree. Leave as is.
 delete_leaf(_, undefined) ->
     undefined;
-%% The entire tree is the leaf. Undefine the tree
-delete_leaf(#leaf{hashkey=K}, #zipper{current = #leaf{hashkey=K}, thread=[]}) ->
+%% If we have the same leaf node we were looking for, kill it.
+delete_leaf(#leaf{hashkey=K}, #leaf{hashkey=K}) ->
     undefined;
-delete_leaf(#leaf{hashkey=K},
-            Z=#zipper{current = #leaf{hashkey=K}, thread=[I=#inner{}|Thread],
-                      index=Index}) ->
-    ParentSize = byte_size(Index)-1,
-    <<ParentIndex:ParentSize/binary, _>> = Index,
-    Z#zipper{current = I, thread = Thread, index = ParentIndex, state = dirty};
-delete_leaf(#leaf{}, Z=#zipper{current = #leaf{}}) ->
-    Z;
-%% If we got an inner node, dig in.
-delete_leaf(Leaf=#leaf{hashkey = K},
-            Z=#zipper{current = I=#inner{children=Children},
-                      thread = Thread, index=Index}) ->
-    Byte = binary:at(K, byte_size(Index)),
+%% If it's a different leaf, the item to delete is already gone. Leave as is.
+delete_leaf(#leaf{}, Leaf=#leaf{}) ->
+    Leaf;
+%% if it's an inner node, look inside
+delete_leaf(Leaf=#leaf{hashkey=K}, Inner=#inner{offset=Offset, children=Children}) ->
+    Byte = binary:at(K, Offset),
     case find_child(Byte, Children) of
-        {not_found, _} -> % not found, leave as is
-            Z;
-        %% Explore recursively
-        {ok, NewChildren={Prev,_Next}, Node} ->
-            maybe_shrink(delete_leaf(
-                    Leaf,
-                    Z#zipper{thread = [I#inner{children = NewChildren}|Thread],
-                             index = <<Index/binary, (length(Prev))>>,
-                             current = Node}))
+        {not_found, _} ->
+            Inner;
+        {ok, {Prev,Next}, Node} ->
+            NewChildren = case maybe_shrink(delete_leaf(Leaf, Node)) of
+                undefined -> % leaf gone
+                    {Prev,Next};
+                NewNode -> % replacement node
+                    {Prev,[{Byte,NewNode}|Next]}
+            end,
+            maybe_shrink(Inner#inner{hashchildren=children_hash(NewChildren),
+                                         children=NewChildren})
     end.
 
 maybe_shrink(undefined) -> undefined;
-maybe_shrink(Z=#zipper{current=#leaf{}}) -> Z;
-maybe_shrink(Z=#zipper{current=#inner{children={[{_,L=#leaf{}}],[]}}}) ->
-    Z#zipper{current=L};
-maybe_shrink(Z=#zipper{current=#inner{children={[], [{_,L=#leaf{}}]}}}) ->
-    Z#zipper{current=L};
-maybe_shrink(Z=#zipper{current=#inner{}}) -> Z.
+maybe_shrink(Leaf = #leaf{}) -> Leaf;
+maybe_shrink(#inner{children={[{_,Leaf=#leaf{}}], []}}) -> Leaf;
+maybe_shrink(#inner{children={[], [{_,Leaf=#leaf{}}]}}) -> Leaf;
+maybe_shrink(Inner=#inner{}) -> Inner.
 
 raw_keys(undefined) ->
     [];
@@ -303,18 +310,36 @@ raw_keys(#inner{children={Prev,Next}}) ->
     )).
 
 %% Same as raw_keys/1, but ignores a given hash
-raw_keys(undefined, _) ->
-    [];
-raw_keys(#leaf{hash=Hash}, Hash) ->
-    [];
-raw_keys(#leaf{userkey=Key}, _) ->
-    [Key];
-raw_keys(#inner{children={Prev, Next}}, ToSkip) ->
-    lists:append(lists:foldl(
-        fun({_, Node}, Acc) -> [raw_keys(Node, ToSkip)|Acc] end,
-        [],
+raw_keys(I=#inner{}, KeyToWatch, ToSkip) -> raw_keys(I, KeyToWatch, ToSkip, unseen).
+
+raw_keys(undefined, _, _, Status) ->
+    {Status, []};
+raw_keys(#leaf{hash=Hash}, _, Hash, Status) ->
+    {merge_status(same, Status), []};
+raw_keys(#leaf{userkey=Key}, Key, _, Status) ->
+    {merge_status(diff, Status), []};
+raw_keys(#leaf{userkey=Key}, _, _, Status) ->
+    {Status, [Key]};
+raw_keys(#inner{children={Prev, Next}}, Key, ToSkip, InitStatus) ->
+    {Status, DeepList} = lists:foldl(
+        fun({_, Node}, {Status, Acc}) ->
+            {NewStatus, ToAdd} = raw_keys(Node, Key, ToSkip, Status),
+            {NewStatus, [ToAdd|Acc]}
+        end,
+        {InitStatus, []},
         Prev ++ Next
-    )).
+    ),
+    {Status, lists:append(DeepList)}.
+
+%% We shouldn't get to see both 'seen' and 'diff' at once.
+%% That would mean the tree may contain many similar keys
+%% in many places
+merge_status(same, unseen) -> same;
+merge_status(unseen, same) -> same;
+merge_status(diff, unseen) -> diff;
+merge_status(unseen, diff) -> diff;
+merge_status(unseen, unseen) -> unseen.
+
 
 root(Node) ->
     #zipper{thread = [],
@@ -337,12 +362,14 @@ to_inner(0, Child=#leaf{hashkey=Hash}) ->
     Children = {[],[{binary:at(Hash,0), Child}]},
     #inner{hashchildren=children_hash(Children),
            children=Children,
-           offset=top};
+           byte=top,
+           offset=0};
 to_inner(Offset, Child=#leaf{hashkey=Hash}) ->
     Children = {[],[{binary:at(Hash,Offset), Child}]},
     #inner{hashchildren=children_hash(Children),
            children=Children,
-           offset=binary:at(Hash,Offset-1)}.
+           byte=binary:at(Hash,Offset-1),
+           offset=Offset}.
 
 %% Empty child set
 find_child(_, {[], []}) ->
@@ -429,12 +456,22 @@ raw_diff(#inner{hashchildren=Hash}, #inner{hashchildren=Hash}, _, _, _) ->
 raw_diff(#leaf{userkey=Key1}, #leaf{userkey=Key2}, _, _, _) ->
     [Key1,Key2];
 %% if both differ but one is an inner node, return everything
-raw_diff(#leaf{hash=ToSkip}, #inner{}, Fun, Path, FunState) ->
+raw_diff(#leaf{userkey=Key, hash=ToSkip}, #inner{}, Fun, Path, FunState) ->
     %% We can only get rid of the current Key if the hashes differ
-    Fun({keys, ToSkip}, Path, FunState);
-raw_diff(Inner=#inner{}, #leaf{hash=ToSkip}, _, _, _) ->
+    %Fun({keys, Key, ToSkip}, Path, FunState);
+    case Fun({keys, Key, ToSkip}, Path, FunState) of
+        {same, Keys} -> Keys;
+        {diff, Keys} -> [Key|Keys];
+        {unseen, Keys} -> [Key|Keys]
+    end;
+raw_diff(Inner=#inner{}, #leaf{userkey=Key, hash=ToSkip}, _, _, _) ->
     %% We can only get rid of the current Key if the hashes differ
-    raw_keys(Inner, ToSkip);
+    %raw_keys(Inner, Key, ToSkip);
+    case raw_keys(Inner, Key, ToSkip) of
+        {same, Keys} -> Keys;
+        {diff, Keys} -> [Key|Keys];
+        {unseen, Keys} -> [Key|Keys]
+    end;
 %% if both nodes are inner and populated, compare them offset by offset.
 raw_diff(#inner{children=Children}, #inner{}, Fun, Path, FunState) ->
     ChildPath = <<Path/binary, 0>>,
@@ -442,32 +479,25 @@ raw_diff(#inner{children=Children}, #inner{}, Fun, Path, FunState) ->
     diff_offsets(children_offsets(Children), Res, Fun, ChildPath, NewState).
 
 %% Whatever is left alone is returned
-diff_offsets([], undefined, _, _, _) ->
-    [];
 diff_offsets(List, undefined, _, _, _) ->
-    io:format("2: ~p~n",[lists:append([raw_keys(Child) || {_, Child} <- List])]),
     lists:append([raw_keys(Child) || {_, Child} <- List]);
 diff_offsets([], _, Fun, Path, FunState) ->
-    NextPath = next_child_path(Path),
     Keys = Fun(keys, Path, FunState),
-    io:format("3: ~p~n",[Keys]),
-    {Res, NewState} = Fun(child_at, Path, FunState),
+    NextPath = next_child_path(Path),
+    {Res, NewState} = Fun(child_at, NextPath, FunState),
     Keys ++ diff_offsets([], Res, Fun, NextPath, NewState);
 %% If both offsets are the same, compare recursively.
 diff_offsets(L=[{OffL, Child}|Rest], R={OffR,Node}, Fun, Path, FunState) ->
-    io:format("4- ~p~n",[{raw_keys(Child), Fun(keys,Path,FunState)}]),
     NextPath = next_child_path(Path),
     if OffL =:= OffR ->
             RawDiff = raw_diff(Child, Node, Fun, Path, FunState),
             {Res, NewState} = Fun(child_at, NextPath, FunState),
             RawDiff ++ diff_offsets(Rest, Res, Fun, NextPath, NewState);
        OffL < OffR ->
-            io:format("4.2 ~p~n", [raw_keys(Child)]),
             raw_keys(Child) ++ 
             diff_offsets(Rest, R, Fun, Path, FunState);
        OffL > OffR ->
             Keys = Fun(keys, Path, FunState),
-            io:format("4.3 ~p~n", [Keys]),
             {Res, NewState} = Fun(child_at, NextPath, FunState),
             Keys ++ diff_offsets(L, Res, Fun, NextPath, NewState)
     end.
@@ -484,7 +514,7 @@ children_offsets({Prev, Next}) -> lists:reverse(Prev, Next).
 %%% PRIVATE (GENERAL) %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%
 hash_offset(Pos, #leaf{hashkey=Hash}) -> binary:at(Hash, Pos);
-hash_offset(_, #inner{offset=Byte}) -> Byte.
+hash_offset(_, #inner{byte=Byte}) -> Byte.
 
 children_hash({Prev,Next}) ->
     Hashes = lists:sort(
