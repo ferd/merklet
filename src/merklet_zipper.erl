@@ -258,41 +258,38 @@ delete_leaf(_, undefined) ->
 %% The entire tree is the leaf. Undefine the tree
 delete_leaf(#leaf{hashkey=K}, #zipper{current = #leaf{hashkey=K}, thread=[]}) ->
     undefined;
-%% Different leaf at the root.
-delete_leaf(#leaf{}, Z=#zipper{thread=[], current = #leaf{}}) ->
+delete_leaf(#leaf{hashkey=K},
+            Z=#zipper{current = #leaf{hashkey=K}, thread=[I=#inner{}|Thread],
+                      index=Index}) ->
+    ParentSize = byte_size(Index)-1,
+    <<ParentIndex:ParentSize/binary, _>> = Index,
+    Z#zipper{current = I, thread = Thread, index = ParentIndex, state = dirty};
+delete_leaf(#leaf{}, Z=#zipper{current = #leaf{}}) ->
     Z;
 %% If we got an inner node, dig in.
 delete_leaf(Leaf=#leaf{hashkey = K},
             Z=#zipper{current = I=#inner{children=Children},
                       thread = Thread, index=Index}) ->
-    Byte = binary:at(K, byte_size(Index)-1),
+    Byte = binary:at(K, byte_size(Index)),
     case find_child(Byte, Children) of
         {not_found, _} -> % not found, leave as is
             Z;
-        %% Can't be one of these if we properly shrink
-        {ok, {[], []}, #leaf{}} ->
-            error(bad_shrinking);  
-        {ok, {[{_,#inner{}}], []}, #leaf{}} ->
-            error(bad_shrinking);  
-        {ok, {[], [{_,#inner{}}]}, #leaf{}} ->
-            error(bad_shrinking);
-        %% Shrinkable cases -- only one child leaf node is left after
-        %% deleting another leaf. We promote that leaf one level and kill
-        %% the current inner node.
-        {ok, {[], [{_,Child=#leaf{}}]}, #leaf{}} ->
-            Z#zipper{current = Child, state = dirty};
-        {ok, {[{_,Child=#leaf{}}], []}, #leaf{}} ->
-            Z#zipper{current = Child, state = dirty};
-        %% Found the leaf, many children left. We can return the
-        %% new set of children
-        {ok, NewChildren, #leaf{}} ->
-            Z#zipper{current = I#inner{children = NewChildren}, state = dirty};
         %% Explore recursively
-        {ok, NewChildren, Inner} ->
-            delete_leaf(Leaf,
-                        Z#zipper{thread = [I#inner{children = NewChildren}|Thread],
-                                 current = Inner})
+        {ok, NewChildren={Prev,_Next}, Node} ->
+            maybe_shrink(delete_leaf(
+                    Leaf,
+                    Z#zipper{thread = [I#inner{children = NewChildren}|Thread],
+                             index = <<Index/binary, (length(Prev))>>,
+                             current = Node}))
     end.
+
+maybe_shrink(undefined) -> undefined;
+maybe_shrink(Z=#zipper{current=#leaf{}}) -> Z;
+maybe_shrink(Z=#zipper{current=#inner{children={[{_,L=#leaf{}}],[]}}}) ->
+    Z#zipper{current=L};
+maybe_shrink(Z=#zipper{current=#inner{children={[], [{_,L=#leaf{}}]}}}) ->
+    Z#zipper{current=L};
+maybe_shrink(Z=#zipper{current=#inner{}}) -> Z.
 
 raw_keys(undefined) ->
     [];
@@ -353,6 +350,8 @@ find_child(_, {[], []}) ->
 %% Found the right one
 find_child(Byte, {Prev, [{Byte, Child}|Next]}) ->
     {ok, {Prev, Next}, Child};
+find_child(Byte, {[{Byte, Child}|Prev], Next}) ->
+    {ok, {Prev, Next}, Child};
 %% Forward search
 find_child(Byte, {[], [{NextByte, NextChild}|Next]=FullNext}) ->
     if Byte > NextByte ->
@@ -378,7 +377,6 @@ find_child(Byte, {[{PrevByte,PrevChild}|Prev]=FullPrev,
        Byte =< PrevByte ->
            find_child(Byte, {Prev, [{PrevByte,PrevChild}|FullNext]})
     end.
-
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% PRIVATE PATH-BASED NAVIGATION %%%
