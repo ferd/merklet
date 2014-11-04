@@ -39,7 +39,7 @@ Todo list:
 
 ## Usage
 
-```
+```erlang
 1> T4 = merklet:insert({term_to_binary("wf"), <<"hehe">>}, T3 = merklet:insert({term_to_binary("c"), <<"third">>}, T2 = merklet:insert({<<"b">>, <<"other">>}, T1 = merklet:insert({<<"a">>, <<"val">>}, T0 = undefined)))).
 #inner{hashchildren = <<106,248,148,67,122,133,161,251,
                         225,195,114,6,143,172,176,84,172,
