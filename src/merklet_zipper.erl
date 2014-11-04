@@ -38,13 +38,16 @@
 -define(HASH, sha).
 -define(HASHBYTES, 20).
 
--define(VSN, 1).
+-define(VSN, 0).
 -define(UNDEFINED, 0).
 -define(INNER, 1).
 -define(LEAF, 2).
 -define(OFFSETBYTE, 3).
 -define(KEYS, 4).
--define(PATH, 5).
+-define(KEYS_SKIP, 5).
+-define(KEYS_SKIP_UNSEEN, 0).
+-define(KEYS_SKIP_SAME, 1).
+-define(KEYS_SKIP_DIFF, 2).
 
 -record(leaf, {userkey :: binary(), % user submitted key
                hashkey :: binary(), % hash of the user submitted key
@@ -65,7 +68,7 @@
 %-type zipper() :: #zipper{} | 'undefined'.
 
 -export([insert/3, insert_many/2, delete/2, keys/1]).
--export([diff/2, access/3]).
+-export([diff/2, diff/3, access/3, access_serialize/3, unserialize/1]).
 -export([rewind/1, at/2]).
 -export([prev/1,next/1,child/1,parent/1]).
 
@@ -73,8 +76,6 @@
 %%% TREE-BUILDING API %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%
 
-%insert(Key, Value, Tree) ->
-    %insert(to_leaf(Key, Value), rewind(Tree)).
 insert(Key, Value, Zipper) ->
     Tree = case rewind(Zipper) of
         undefined -> undefined;
@@ -135,9 +136,17 @@ access({keys, Key, Skip}, Path, Zipper) ->
     end,
     raw_keys(Node, Key, Skip).
 
-%access_serialize(at, Path, Zipper) ->
-%    NewZipper = at(Path, Zipper),
-%    serialize(NewZipper
+access_serialize(at, Path, Zipper) ->
+    {Res, NewZipper} = access(at, Path, Zipper),
+    {serialize(Res), NewZipper};
+access_serialize(child_at, Path, Zipper) ->
+    {Res, NewZipper} = access(child_at, Path, Zipper),
+    {serialize(Res), NewZipper};
+access_serialize(keys, Path, Zipper) ->
+    serialize(access(keys, Path, Zipper));
+access_serialize({keys, _, _}=T, Path, Zipper) ->
+    serialize(access(T, Path, Zipper)).
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% PATH-BASED NAVIGATION %%%
@@ -526,3 +535,30 @@ children_hash({Prev,Next}) ->
     crypto:hash_final(lists:foldl(fun(K, H) -> crypto:hash_update(H, K) end,
                                   crypto:hash_init(?HASH),
                                   Hashes)).
+
+%%% TESTING SHIT %%%
+%% Serialize nodes flatly. All terms are self-contained and their
+%% trailing value can be used as one blob. A protocol using this format
+%% of serialization should therefore frame each binary before concatenating
+%% them.
+%%
+%% Note that this format is sufficient for diffing, but not to rebuild entire
+%% trees from scratch.
+serialize(undefined) ->
+    undefined;
+serialize(#leaf{userkey=Key, hashkey=HKey, hash=Hash}) ->
+    #leaf{userkey=Key, hashkey=HKey, hash=Hash};
+serialize(#inner{hashchildren=Hash}) ->
+    #inner{hashchildren=Hash};
+serialize({Offset, Node}) when is_record(Node, leaf); is_record(Node, inner) ->
+    {Offset, serialize(Node)};
+serialize(Keys) when is_list(Keys) ->
+    Keys;
+serialize({Word, Keys}) when is_list(Keys), is_atom(Word) ->
+    {Word, Keys}.
+
+%% Deserialize nodes flatly. Assume self-contained binaries.
+%%
+%% Note that this format is sufficient for diffing, but not to rebuild entire
+%% trees from scratch.
+unserialize(X) -> X.
