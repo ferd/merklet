@@ -1,14 +1,14 @@
 -module(merklet_model).
--export([insert/3, insert_many/2, delete/2, keys/1]).
+-export([insert/2, insert_many/2, delete/2, keys/1]).
 -export([diff/2]).
 
-insert(K,V,undefined) -> [{K,V}];
-insert(K,V,[]) -> [{K,V}];
-insert(K,V,[{K,_}|T]) -> [{K,V}|T];
-insert(K,V,[H|T]) -> [H|insert(K,V,T)].
+insert({K,V},undefined) -> [{K,V}];
+insert({K,V},[]) -> [{K,V}];
+insert({K,V},[{K,_}|T]) -> [{K,V}|T];
+insert({K,V},[H|T]) -> [H|insert({K,V},T)].
 
 insert_many(L, Init) ->
-    lists:foldl(fun({K,V}, Acc) -> insert(K,V,Acc) end, Init, L).
+    lists:foldl(fun(Entry, Acc) -> insert(Entry,Acc) end, Init, L).
 
 delete(_, undefined) -> undefined;
 delete(_, []) -> [];

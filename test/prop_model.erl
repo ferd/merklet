@@ -1,9 +1,10 @@
+%%% @doc Test Merklet using a simple list-based model as a comparative
+%%% implementation (test/merklet_model.erl).
 -module(prop_model).
-
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--define(OPTS, [{numtests,1000}, {to_file, user}]).
+-define(OPTS, [{numtests,5000}, {to_file, user}]).
 -define(run(Case), {timeout, timer:seconds(60),
                     ?_assert(proper:quickcheck(Case, ?OPTS))}).
 
@@ -18,10 +19,11 @@ eunit_test_() ->
      ?run(prop_delete_random_diff()),
      ?run(prop_delete_members_diff()),
      ?run(prop_overwrite_diff()),
-     ?run(prop_mixed_diff())
+     ?run(prop_mixed_diff()),
+     ?run(prop_mixed_dist_diff())
     ].
-%% prop_mixed_diff
 
+%% Test insertion and reading the keys back
 prop_insert_many() ->
     ?FORALL(Entries, keyvals(),
             merklet_model:keys(merklet_model:insert_many(Entries,undefined))
@@ -29,6 +31,7 @@ prop_insert_many() ->
             merklet:keys(merklet:insert_many(Entries,undefined))
            ).
 
+%% Delete keys that may or may not be in the tree
 prop_delete_random() ->
     ?FORALL({Entries, ToDelete}, {keyvals(), list(binary())},
             merklet_model:keys(
@@ -42,6 +45,7 @@ prop_delete_random() ->
                        merklet:insert_many(Entries,undefined)))
            ).
 
+%% Only delete keys that have previously been inserted in the tree
 prop_delete_members() ->
     ?FORALL({Entries, ToDelete}, delete_keyvals(0.5),
             merklet_model:keys(
@@ -55,6 +59,7 @@ prop_delete_members() ->
                        merklet:insert_many(Entries,undefined)))
            ).
 
+%% Overwrite existing entries, make sure nothing was lost or added
 prop_overwrite() ->
     ?FORALL({Entries, ToUpdate}, overwrite_keyvals(0.5),
             merklet_model:keys(
@@ -66,24 +71,28 @@ prop_overwrite() ->
                     merklet:insert_many(Entries,undefined)))
            ).
 
+%% Trees diffed with themselves should be stable
 prop_insert_same_diff() ->
     ?FORALL(Entries, keyvals(),
             merklet_model:diff(merklet_model:insert_many(Entries,undefined),
                                merklet_model:insert_many(Entries,undefined))
             =:=
             merklet:diff(merklet:insert_many(Entries,undefined),
-                                merklet:insert_many(Entries,undefined))
+                         merklet:insert_many(Entries,undefined))
            ).
 
+%% Two independent trees diffed together (no verification of commutativity)
 prop_insert_mixed_diff() ->
     ?FORALL({Entries1, Entries2}, {keyvals(), keyvals()},
             merklet_model:diff(merklet_model:insert_many(Entries1,undefined),
                                merklet_model:insert_many(Entries2,undefined))
             =:=
             merklet:diff(merklet:insert_many(Entries1,undefined),
-                                merklet:insert_many(Entries2,undefined))
+                         merklet:insert_many(Entries2,undefined))
            ).
 
+%% Two independent trees with no overlapping data sets diffed together
+%% (no verification of commutativity)
 prop_insert_disjoint_diff() ->
     ?FORALL(Lists, disjoint_keyvals(),
         begin
@@ -92,9 +101,11 @@ prop_insert_disjoint_diff() ->
                                merklet_model:insert_many(Entries2,undefined))
             =:=
             merklet:diff(merklet:insert_many(Entries1,undefined),
-                                merklet:insert_many(Entries2,undefined))
+                         merklet:insert_many(Entries2,undefined))
         end).
 
+%% Diffing two trees that had random element deletion that may or may
+%% not be present (tests commutativity)
 prop_delete_random_diff() ->
     ?FORALL({Entries, ToDelete}, {keyvals(), list(binary())},
         begin
@@ -109,6 +120,7 @@ prop_delete_random_diff() ->
              =:= merklet:diff(MerkletDelete, MerkletFull))
         end).
 
+%% Diffing two trees that had member element deletion (tests commutativity)
 prop_delete_members_diff() ->
     ?FORALL({Entries, ToDelete}, delete_keyvals(0.5),
         begin
@@ -123,6 +135,7 @@ prop_delete_members_diff() ->
              =:= merklet:diff(MerkletDelete, MerkletFull))
         end).
 
+%% Diffing trees that had overwritten pieces of data (tests commutativity)
 prop_overwrite_diff() ->
     ?FORALL({Entries, ToUpdate}, overwrite_keyvals(0.5),
         begin
@@ -137,6 +150,8 @@ prop_overwrite_diff() ->
              =:= merklet:diff(MerkletUpdate, MerkletFull))
         end).
 
+%% Commutative verification of various trees that had their keys
+%% inserted, updated, and randomly deleted.
 prop_mixed_diff() ->
     ?FORALL({{Entries, ToUpdate}, ToDelete}, {overwrite_keyvals(0.5), list(binary())},
         begin
@@ -168,6 +183,42 @@ prop_mixed_diff() ->
              =:= merklet:diff(MerkletDelete, MerkletUpdate))
         end).
 
+%% Commutative verification of various trees that had their keys
+%% inserted, updated, and randomly deleted, while using the
+%% distributed/serialized interface.
+prop_mixed_dist_diff() ->
+    ?FORALL({{Entries, ToUpdate}, ToDelete}, {overwrite_keyvals(0.5), list(binary())},
+        begin
+            ModelFull = merklet_model:insert_many(Entries, undefined),
+            ModelDelete = delete(merklet_model, ToDelete, ModelFull),
+            ModelUpdate = merklet_model:insert_many(ToUpdate, ModelDelete),
+            MerkletFull = merklet:insert_many(Entries, undefined),
+            MerkletDelete = delete(merklet, ToDelete, MerkletFull),
+            MerkletUpdate = merklet:insert_many(ToUpdate, MerkletDelete),
+            DistFull = merklet:access_unserialize(merklet:access_serialize(MerkletFull)),
+            DistDelete = merklet:access_unserialize(merklet:access_serialize(MerkletDelete)),
+            DistUpdate = merklet:access_unserialize(merklet:access_serialize(MerkletUpdate)),
+            %% Full vs. Update
+            (merklet_model:diff(ModelFull, ModelUpdate)
+             =:= merklet:dist_diff(MerkletFull, DistUpdate))
+            andalso
+            (merklet_model:diff(ModelUpdate, ModelFull)
+             =:= merklet:dist_diff(MerkletUpdate, DistFull))
+            %% Full vs. Delete
+            andalso
+            (merklet_model:diff(ModelFull, ModelDelete)
+             =:= merklet:dist_diff(MerkletFull, DistDelete))
+            andalso
+            (merklet_model:diff(ModelDelete, ModelFull)
+             =:= merklet:dist_diff(MerkletDelete, DistFull))
+            %% Delete vs. Update
+            andalso
+            (merklet_model:diff(ModelUpdate, ModelDelete)
+             =:= merklet:dist_diff(MerkletUpdate, DistDelete))
+            andalso
+            (merklet_model:diff(ModelDelete, ModelUpdate)
+             =:= merklet:dist_diff(MerkletDelete, DistUpdate))
+        end).
 
 %%%%%%%%%%%%%%%
 %%% HELPERS %%%
