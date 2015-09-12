@@ -12,12 +12,6 @@ eunit_test_() ->
      ?run(prop_delete()),
      ?run(prop_modify())].
 
-regression_diff_test() ->
-    T1 = insert_all([{<<1>>,<<1>>},{<<2>>,<<2>>},{<<3>>,<<3>>}]),
-    T2 = insert_all([{<<1>>,<<0>>}]),
-    ?assertEqual([<<1>>,<<2>>,<<3>>], merklet:diff(T1,T2)),
-    ?assertEqual([<<1>>,<<2>>,<<3>>], merklet:diff(T2,T1)).
-
 %%%%%%%%%%%%%%%%%%
 %%% Properties %%%
 %%%%%%%%%%%%%%%%%%
