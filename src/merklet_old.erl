@@ -33,7 +33,7 @@
 %%% It also allows to do a level-order traversal node-per-node over the network
 %%% allowing somewhat efficient diffing.
 %%% @end
--module(merklet).
+-module(merklet_old).
 
 -record(leaf, {userkey :: binary(), % user submitted key
                hashkey :: binary(), % hash of the user submitted key
@@ -405,7 +405,9 @@ children_hash(Children) ->
                 #inner{hashchildren=HashChildren} -> HashChildren;
                 #leaf{hash=Hash} -> Hash
               end || {_Offset, Child} <- Children],
-    crypto:hash(?HASH, Hashes).
+    crypto:hash_final(lists:foldl(fun(K, H) -> crypto:hash_update(H, K) end,
+                                  crypto:hash_init(?HASH),
+                                  Hashes)).
 
 %% @doc Checks if the node can be shrunken down to a single leaf it contains
 %% or should just be returned as is.
