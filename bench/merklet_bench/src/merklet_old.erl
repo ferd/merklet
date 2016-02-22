@@ -405,9 +405,7 @@ children_hash(Children) ->
                 #inner{hashchildren=HashChildren} -> HashChildren;
                 #leaf{hash=Hash} -> Hash
               end || {_Offset, Child} <- Children],
-    crypto:hash_final(lists:foldl(fun(K, H) -> crypto:hash_update(H, K) end,
-                                  crypto:hash_init(?HASH),
-                                  Hashes)).
+    crypto:hash(?HASH, Hashes).
 
 %% @doc Checks if the node can be shrunken down to a single leaf it contains
 %% or should just be returned as is.
