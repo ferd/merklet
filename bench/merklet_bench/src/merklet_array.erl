@@ -33,15 +33,14 @@
 %%% It also allows to do a level-order traversal node-per-node over the network
 %%% allowing somewhat efficient diffing.
 %%% @end
--module(merklet).
+-module(merklet_array).
 
--record(leaf, {hash :: binary(),      % hash(hash(key), hash(value))
-               userkey :: binary(),   % user submitted key
-               hashkey :: binary()}). % hash of the user submitted key
+-record(leaf, {userkey :: binary(), % user submitted key
+               hashkey :: binary(), % hash of the user submitted key
+               hash :: binary()}).  % hash(hash(key), hash(value))
 -record(inner, {hashchildren :: binary(), % hash of children's hashes
                 children :: [{offset(), #inner{} | #leaf{}}, ...],
                 offset :: non_neg_integer()}). % byte offset
--define(HASHPOS, 2). % #leaf.hash =:= #inner.hashchildren
 
 -type offset() :: byte().
 -type leaf() :: #leaf{}.
@@ -207,11 +206,11 @@ insert(Offset, NewLeaf, OldLeaf=#leaf{}) ->
 %% Insert to an inner node!
 insert(Offset, Leaf=#leaf{hashkey=Key}, Inner=#inner{children=Children}) ->
     Byte = binary:at(Key, Offset),
-    NewChildren = case orddict:find(Byte, Children) of
-        error ->
-            orddict:store(Byte, Leaf, Children);
-        {ok, Subtree} ->
-            orddict:store(Byte, insert(Offset+1, Leaf, Subtree), Children)
+    NewChildren = case array:get(Byte, Children) of
+        undefined ->
+            array:set(Byte, Leaf, Children);
+        Subtree ->
+            array:set(Byte, insert(Offset+1, Leaf, Subtree), Children)
     end,
     Inner#inner{hashchildren=children_hash(NewChildren), children=NewChildren}.
 
@@ -227,15 +226,15 @@ delete_leaf(#leaf{}, Leaf=#leaf{}) ->
 %% if it's an inner node, look inside
 delete_leaf(Leaf=#leaf{hashkey=K}, Inner=#inner{offset=Offset, children=Children}) ->
     Byte = binary:at(K, Offset),
-    case orddict:find(Byte, Children) of
-        error -> % not found, leave as is
+    case array:get(Byte, Children) of
+        undefined -> % not found, leave as is
             Inner;
-        {ok, Subtree} ->
+        Subtree ->
             NewChildren = case maybe_shrink(delete_leaf(Leaf, Subtree)) of
                 undefined -> % leaf gone
-                    orddict:erase(Byte, Children);
+                    array:reset(Byte, Children);
                 Node -> % replacement node
-                    orddict:store(Byte, Node, Children)
+                    array:set(Byte, Node, Children)
             end,
             maybe_shrink(Inner#inner{hashchildren=children_hash(NewChildren),
                                      children=NewChildren})
@@ -246,7 +245,7 @@ raw_keys(undefined) ->
 raw_keys(#leaf{userkey=Key}) ->
     [Key];
 raw_keys(#inner{children=Children}) ->
-    lists:append(orddict:fold(
+    lists:append(array:sparse_foldl(
         fun(_Byte, Node, Acc) -> [raw_keys(Node)|Acc] end,
         [],
         Children
@@ -264,8 +263,8 @@ raw_keys(#leaf{userkey=Key}, Key, _, Status) ->
 raw_keys(#leaf{userkey=Key}, _, _, Status) ->
     {Status, [Key]};
 raw_keys(#inner{children=Children}, Key, ToSkip, InitStatus) ->
-    {Status, DeepList} = lists:foldl(
-        fun({_, Node}, {Status, Acc}) ->
+    {Status, DeepList} = array:sparse_foldl(
+        fun(_, Node, {Status, Acc}) ->
             {NewStatus, ToAdd} = raw_keys(Node, Key, ToSkip, Status),
             {NewStatus, [ToAdd|Acc]}
         end,
@@ -385,7 +384,7 @@ to_leaf(Key, Value) when is_binary(Key) ->
 %% to be used as a sparse K-ary tree.
 -spec to_inner(offset(), leaf()) -> inner().
 to_inner(Offset, Child=#leaf{hashkey=Hash}) ->
-    Children = orddict:store(binary:at(Hash, Offset), Child, orddict:new()),
+    Children = array:set(binary:at(Hash, Offset), Child, array:new(256)),
     #inner{hashchildren=children_hash(Children),
            children=Children,
            offset=Offset}.
@@ -402,7 +401,10 @@ to_inner(Offset, Child=#leaf{hashkey=Hash}) ->
 %% @todo consider endianness for absolute portability
 -spec children_hash([{offset(), leaf()}, ...]) -> binary().
 children_hash(Children) ->
-    Hashes = [element(?HASHPOS, Child) || {_Offset, Child} <- Children],
+    Hashes = [case Child of
+                #inner{hashchildren=HashChildren} -> HashChildren;
+                #leaf{hash=Hash} -> Hash
+              end || Child <- array:sparse_to_list(Children)],
     crypto:hash(?HASH, Hashes).
 
 %% @doc Checks if the node can be shrunken down to a single leaf it contains
@@ -419,18 +421,15 @@ maybe_shrink(Inner = #inner{children=Children}) ->
     %% a fold with a quick try ... catch to quickly figure this out, in
     %% two iterations at most.
     try
-        orddict:fold(fun(_Offset, Leaf=#leaf{}, 0) -> Leaf;
-                        (_, _, _) -> throw(false)
-                     end, 0, Children)
+        array:sparse_foldl(fun(_Offset, Leaf=#leaf{}, 0) -> Leaf;
+                              (_, _, _) -> throw(false)
+                           end, 0, Children)
     catch
         throw:false -> Inner
     end.
 
-%% @doc Returns the sorted offsets of a given child. Because we're using
-%% orddicts, we can just straight up return the children as is, but another
-%% data structure would need to transform them into a key/value list sorted
-%% by the offset: [{Offet, ChildNode}].
-children_offsets(Children) -> Children.
+%% @doc Returns the sorted offsets of a given child.
+children_offsets(Children) -> array:sparse_to_orddict(Children).
 
 %% Wrapper for the diff function.
 access_local(Node) ->
@@ -464,10 +463,10 @@ child_at(<<N,Rest/binary>>, #inner{children=Children}) ->
     %% inner node.
     %% If the path goes past what the node contains, we return `undefined'.
     try
-        orddict:fold(fun(Off, Node, 0) when Rest =:= <<>> -> throw({Off,Node});
-                        (_, Node, 0) -> throw(Node);
-                        (_, _, X) -> X-1
-                     end, N, Children),
+        array:sparse_foldl(fun(Off, Node, 0) when Rest =:= <<>> -> throw({Off,Node});
+                              (_, Node, 0) -> throw(Node);
+                              (_, _, X) -> X-1
+                           end, N, Children),
         undefined
     catch
         throw:{Off,Node} -> {Off,Node};

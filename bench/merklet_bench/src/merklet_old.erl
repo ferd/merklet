@@ -33,15 +33,14 @@
 %%% It also allows to do a level-order traversal node-per-node over the network
 %%% allowing somewhat efficient diffing.
 %%% @end
--module(merklet).
+-module(merklet_old).
 
--record(leaf, {hash :: binary(),      % hash(hash(key), hash(value))
-               userkey :: binary(),   % user submitted key
-               hashkey :: binary()}). % hash of the user submitted key
+-record(leaf, {userkey :: binary(), % user submitted key
+               hashkey :: binary(), % hash of the user submitted key
+               hash :: binary()}).  % hash(hash(key), hash(value))
 -record(inner, {hashchildren :: binary(), % hash of children's hashes
                 children :: [{offset(), #inner{} | #leaf{}}, ...],
                 offset :: non_neg_integer()}). % byte offset
--define(HASHPOS, 2). % #leaf.hash =:= #inner.hashchildren
 
 -type offset() :: byte().
 -type leaf() :: #leaf{}.
@@ -402,7 +401,10 @@ to_inner(Offset, Child=#leaf{hashkey=Hash}) ->
 %% @todo consider endianness for absolute portability
 -spec children_hash([{offset(), leaf()}, ...]) -> binary().
 children_hash(Children) ->
-    Hashes = [element(?HASHPOS, Child) || {_Offset, Child} <- Children],
+    Hashes = [case Child of
+                #inner{hashchildren=HashChildren} -> HashChildren;
+                #leaf{hash=Hash} -> Hash
+              end || {_Offset, Child} <- Children],
     crypto:hash(?HASH, Hashes).
 
 %% @doc Checks if the node can be shrunken down to a single leaf it contains
