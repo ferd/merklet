@@ -59,8 +59,11 @@
 -export([dist_diff/2, access_serialize/1, access_unserialize/1]).
 
 -define(HASH, sha).
--define(HASHBYTES, 20).
+%% going for 128+128, splitting bytes for leaves on every 4 bits
+-define(HASHBYTES, 40).
+-define(BITSPER, 4).
 
+-define(SHASHBYTES, 20). % for serialization we count bytes fully
 -define(VSN, 1).
 -define(UNDEFINED, 0).
 -define(INNER, 1).
@@ -206,7 +209,9 @@ insert(Offset, NewLeaf, OldLeaf=#leaf{}) ->
     insert(Offset, NewLeaf, to_inner(Offset, OldLeaf));
 %% Insert to an inner node!
 insert(Offset, Leaf=#leaf{hashkey=Key}, Inner=#inner{children=Children}) ->
-    Byte = binary:at(Key, Offset),
+    %Byte = binary:at(Key, Offset),
+    BOffset = Offset*?BITSPER,
+    <<_:BOffset/bits, Byte:?BITSPER, _/bits>> = Key,
     NewChildren = case orddict:find(Byte, Children) of
         error ->
             orddict:store(Byte, Leaf, Children);
@@ -226,7 +231,9 @@ delete_leaf(#leaf{}, Leaf=#leaf{}) ->
     Leaf;
 %% if it's an inner node, look inside
 delete_leaf(Leaf=#leaf{hashkey=K}, Inner=#inner{offset=Offset, children=Children}) ->
-    Byte = binary:at(K, Offset),
+    %Byte = binary:at(K, Offset),
+    BOffset = Offset*?BITSPER,
+    <<_:BOffset/bits, Byte:?BITSPER, _/bits>> = K,
     case orddict:find(Byte, Children) of
         error -> % not found, leave as is
             Inner;
@@ -362,8 +369,8 @@ next_child_path(Path) ->
     ParentSize = byte_size(Path) - 1,
     <<ParentPath:ParentSize/binary, ChildByte>> = Path,
     case ChildByte+1 of
-        256 -> undefined;
-        Next -> <<ParentPath/binary, Next>>
+        128 -> undefined;
+        Next -> <<ParentPath/bits, Next>>
     end.
 
 %%% Basic Tree Management Functions
@@ -385,7 +392,10 @@ to_leaf(Key, Value) when is_binary(Key) ->
 %% to be used as a sparse K-ary tree.
 -spec to_inner(offset(), leaf()) -> inner().
 to_inner(Offset, Child=#leaf{hashkey=Hash}) ->
-    Children = orddict:store(binary:at(Hash, Offset), Child, orddict:new()),
+%    Children = orddict:store(binary:at(Hash, Offset), Child, orddict:new()),
+    BOffset = Offset * ?BITSPER,
+    <<_:BOffset/bits, Byte:?BITSPER, _/bits>> = Hash,
+    Children = orddict:store(Byte, Child, orddict:new()),
     #inner{hashchildren=children_hash(Children),
            children=Children,
            offset=Offset}.
@@ -455,7 +465,7 @@ at(Path, Tree) ->
 child_at(<<>>, Node) ->
     %% End of path, return whatever
     Node;
-child_at(<<N,Rest/binary>>, #inner{children=Children}) ->
+ child_at(<<N, Rest/bits>>, #inner{children=Children}) ->
     %% Depending on the path depth, the behavior changes. If the path depth
     %% left is of one (i.e. `<<N>> = <<N,Rest/binary>>') and that we are in
     %% an inner node, then we're looking for the child definition as
@@ -487,9 +497,9 @@ child_at(_, _) ->
 serialize(undefined) ->
     <<?VSN, ?UNDEFINED>>;
 serialize(#leaf{userkey=Key, hashkey=HKey, hash=Hash}) ->
-    <<?VSN, ?LEAF, ?HASHBYTES:32, HKey/binary, Hash/binary, Key/binary>>;
+    <<?VSN, ?LEAF, ?SHASHBYTES:32, HKey/binary, Hash/binary, Key/binary>>;
 serialize(#inner{hashchildren=Hash}) ->
-    <<?VSN, ?INNER, ?HASHBYTES:32, Hash/binary>>;
+    <<?VSN, ?INNER, ?SHASHBYTES:32, Hash/binary>>;
 serialize({Offset, Node}) when is_record(Node, leaf); is_record(Node, inner) ->
     <<?VSN, ?OFFSETBYTE, Offset, (serialize(Node))/binary>>;
 serialize(Keys) when is_list(Keys) ->
@@ -510,10 +520,10 @@ serialize({Word, Keys}) when is_list(Keys), is_atom(Word) ->
 %% trees from scratch.
 unserialize(<<?VSN, ?UNDEFINED>>) ->
     undefined;
-unserialize(<<?VSN, ?LEAF, ?HASHBYTES:32, HKey:?HASHBYTES/binary,
-              Hash:?HASHBYTES/binary, Key/binary>>) ->
+unserialize(<<?VSN, ?LEAF, ?SHASHBYTES:32, HKey:?SHASHBYTES/binary,
+              Hash:?SHASHBYTES/binary, Key/binary>>) ->
     #leaf{userkey=Key, hashkey=HKey, hash=Hash};
-unserialize(<<?VSN, ?INNER, ?HASHBYTES:32, Hash:?HASHBYTES/binary>>) ->
+unserialize(<<?VSN, ?INNER, ?SHASHBYTES:32, Hash:?SHASHBYTES/binary>>) ->
     #inner{hashchildren=Hash};
 unserialize(<<?VSN, ?OFFSETBYTE, Byte, Node/binary>>) ->
     {Byte, unserialize(Node)};
