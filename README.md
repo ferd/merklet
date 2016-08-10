@@ -30,12 +30,11 @@ Todo list:
 
 ## Compiling ##
 
-    $ rebar compile
+    $ rebar3 compile
 
 ## Running Tests
 
-    $ rebar get-deps compile --config test.rebar.config
-    $ rebar eunit --config test.rebar.config skip_deps=true
+    $ rebar3 as test do proper, eunit, ct
 
 ## Usage
 
@@ -104,9 +103,3 @@ Todo list:
 [<<"a">>,<<"b">>,<<131,107,0,1,99>>
 ```
 
-## Notes ##
-
-The implementation is still unstable and should be used with care while this
-notice is here.
-
-More docs to come.
