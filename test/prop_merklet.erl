@@ -108,7 +108,7 @@ diff_keyvals() ->
 delete_keyvals(Rate) ->
     ?LET(KeyVals, keyvals(),
          begin
-          Rand = random:uniform(),
+          Rand = rand:uniform(),
           ToDelete = [Key || {Key,_} <- KeyVals, Rate > Rand],
           WithoutDeleted = [{K,V} || {K,V} <- KeyVals, Rate < Rand],
           {KeyVals, WithoutDeleted, ToDelete}
@@ -119,7 +119,7 @@ modify_keyvals(Rate) ->
     ?SUCHTHAT({_,ToChange}, 
               ?LET(KeyVals, keyvals(),
                 begin
-                  Rand = random:uniform(),
+                  Rand = rand:uniform(),
                   ToDelete = [Key || {Key,_} <- KeyVals, Rate > Rand],
                   {KeyVals, lists:usort(ToDelete)}
                 end),

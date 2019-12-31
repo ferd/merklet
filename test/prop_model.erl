@@ -235,7 +235,7 @@ keyvals() -> list({binary(), binary()}).
 delete_keyvals(Rate) ->
     ?LET(KeyVals, keyvals(),
          begin
-          Rand = random:uniform(),
+          Rand = rand:uniform(),
           ToDelete = [Key || {Key,_} <- KeyVals, Rate > Rand],
           {KeyVals, ToDelete}
          end).
@@ -243,7 +243,7 @@ delete_keyvals(Rate) ->
 overwrite_keyvals(Rate) ->
     ?LET(KeyVals, keyvals(),
          begin
-          Rand = random:uniform(),
+          Rand = rand:uniform(),
           ToUpdate = [{Key, <<0,Val/binary>>} || {Key,Val} <- KeyVals, Rate > Rand],
           {KeyVals, ToUpdate}
          end).
