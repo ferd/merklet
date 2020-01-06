@@ -1,10 +1,9 @@
 {application, merklet,
  [{description, "Merkle Trees for data replication purposes"},
-  {vsn, "1.0.1"},
+  {vsn, "1.0.2"},
   {modules, [merklet]},
   {registered, []},
   {applications, [kernel, stdlib, crypto]},
 
   {licenses, ["MIT"]},
-  {maintainers, ["Fred Hebert"]},
   {links, [{"github", "https://github.com/ferd/merklet"}]}]}.

@@ -103,3 +103,7 @@ Todo list:
 [<<"a">>,<<"b">>,<<131,107,0,1,99>>
 ```
 
+## Changelog ##
+
+- 1.0.2: use the `rand` module to be more current in code (thanks @michaelklishin)
+
