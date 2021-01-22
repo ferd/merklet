@@ -82,7 +82,7 @@ insert({Key, Value}, Tree) ->
     insert(0, to_leaf(Key, Value), Tree).
 
 %% @doc Adds multiple keys to the tree, or overwrites existing ones.
--spec insert_many({key(), value()}, tree()) -> tree().
+-spec insert_many(list({key(), value()}), tree()) -> tree().
 insert_many([], Tree) -> Tree;
 insert_many([H|T], Tree) -> insert_many(T, insert(H, Tree)).
 
@@ -205,15 +205,19 @@ insert(_Offset, Leaf=#leaf{hashkey=Key}, #leaf{hashkey=Key}) ->
 insert(Offset, NewLeaf, OldLeaf=#leaf{}) ->
     insert(Offset, NewLeaf, to_inner(Offset, OldLeaf));
 %% Insert to an inner node!
-insert(Offset, Leaf=#leaf{hashkey=Key}, Inner=#inner{children=Children}) ->
+insert(Offset, Leaf=#leaf{hashkey=Key}, Inner=#inner{children=Children,
+                                                     hashchildren=Hash}) ->
     Byte = binary:at(Key, Offset),
-    NewChildren = case orddict:find(Byte, Children) of
+    case orddict:find(Byte, Children) of
         error ->
-            orddict:store(Byte, Leaf, Children);
+            Inner#inner{hashchildren=children_hash([{Byte, Leaf}], Hash),
+                        children=orddict:store(Byte, Leaf, Children)};
         {ok, Subtree} ->
-            orddict:store(Byte, insert(Offset+1, Leaf, Subtree), Children)
-    end,
-    Inner#inner{hashchildren=children_hash(NewChildren), children=NewChildren}.
+            InsertLeaf = insert(Offset+1, Leaf, Subtree),
+            NewHash = children_hash([{Byte, InsertLeaf}, {Byte, Subtree}], Hash),
+            Inner#inner{hashchildren=NewHash,
+                        children=orddict:store(Byte, InsertLeaf, Children)}
+    end.
 
 %% Not found or empty tree. Leave as is.
 delete_leaf(_, undefined) ->
@@ -257,10 +261,10 @@ raw_keys(I=#inner{}, KeyToWatch, ToSkip) -> raw_keys(I, KeyToWatch, ToSkip, unse
 
 raw_keys(undefined, _, _, Status) ->
     {Status, []};
-raw_keys(#leaf{hash=Hash}, _, Hash, Status) ->
-    {merge_status(same, Status), []};
-raw_keys(#leaf{userkey=Key}, Key, _, Status) ->
-    {merge_status(diff, Status), []};
+raw_keys(#leaf{hash=Hash}, _, Hash, _Status) ->
+    {same, []};
+raw_keys(#leaf{userkey=Key}, Key, _, _Status) ->
+    {diff, []};
 raw_keys(#leaf{userkey=Key}, _, _, Status) ->
     {Status, [Key]};
 raw_keys(#inner{children=Children}, Key, ToSkip, InitStatus) ->
@@ -273,15 +277,6 @@ raw_keys(#inner{children=Children}, Key, ToSkip, InitStatus) ->
         Children
     ),
     {Status, lists:append(DeepList)}.
-
-%% We shouldn't get to see both 'seen' and 'diff' at once.
-%% That would mean the tree may contain many similar keys
-%% in many places
-merge_status(same, unseen) -> same;
-merge_status(unseen, same) -> same;
-merge_status(diff, unseen) -> diff;
-merge_status(unseen, diff) -> diff;
-merge_status(unseen, unseen) -> unseen.
 
 -spec diff(tree(), access_fun(), path()) -> [key()].
 diff(Tree, Fun, Path) ->
@@ -376,10 +371,9 @@ to_leaf(Key, Value) when is_binary(Key) ->
     %% is based on the keys, but we can still compare and use both
     %% the key and its value to do comparison when diffing.
     HashKey = crypto:hash(?HASH, Key),
-    HashVal = crypto:hash(?HASH, Value),
     #leaf{userkey=Key,
           hashkey=HashKey,
-          hash=crypto:hash(?HASH, <<HashKey/binary, HashVal/binary>>)}.
+          hash=crypto:hash(?HASH, <<HashKey/binary, Value/binary>>)}.
 
 %% @doc We build a Key-Value list of the child nodes and their offset
 %% to be used as a sparse K-ary tree.
@@ -402,8 +396,18 @@ to_inner(Offset, Child=#leaf{hashkey=Hash}) ->
 %% @todo consider endianness for absolute portability
 -spec children_hash([{offset(), leaf()}, ...]) -> binary().
 children_hash(Children) ->
-    Hashes = [element(?HASHPOS, Child) || {_Offset, Child} <- Children],
-    crypto:hash(?HASH, Hashes).
+    children_hash(Children, 0).
+
+-spec children_hash([{offset(), leaf()}, ...], integer() | binary()) -> binary().
+children_hash(Children, <<InitHash:(?HASHBYTES*8)/integer>>) ->
+    children_hash(Children, InitHash);
+children_hash(Children, InitHash) ->
+    HashLength = ?HASHBYTES*8,
+    Result = lists:foldl(fun({_, Child}, Acc) ->
+                           <<HasInt:HashLength/integer>> = element(?HASHPOS, Child),
+                            HasInt bxor Acc
+                         end, InitHash, Children),
+    <<Result:HashLength/integer>>.
 
 %% @doc Checks if the node can be shrunken down to a single leaf it contains
 %% or should just be returned as is.
@@ -530,4 +534,3 @@ unserialize(<<?VSN, ?KEYS_SKIP, Seen:2, NumKeys:16, Serialized/binary>>) ->
     Keys = [Key || <<Size:16, Key:Size/binary>> <= Serialized],
     NumKeys = length(Keys),
     {Word, Keys}.
-
