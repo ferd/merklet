@@ -105,5 +105,6 @@ Todo list:
 
 ## Changelog ##
 
+- 2.0.0: use `bxor` as the hashing function for children node and remove some less necessary hashing for a major speed boost (thanks to [@systream](https://github.com/ferd/merklet/pull/7))
 - 1.0.2: use the `rand` module to be more current in code (thanks @michaelklishin)
 
